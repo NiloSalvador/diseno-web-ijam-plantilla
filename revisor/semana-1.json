@@ -53,6 +53,7 @@
       "tipo": "commits",
       "puntos": 10,
       "nombre": "Hay al menos un commit tuyo",
+      "archivo": "BRIEF.md",
       "minimo": 2
     }
   ]

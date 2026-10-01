@@ -171,8 +171,12 @@ const CRITERIOS = {
 		return { ok: false, detalle: `No hay ninguna imagen ${c.extensiones.join(', ')} en la carpeta ${c.carpeta}.` };
 	},
 
+	// Con «archivo» cuenta solo los commits que lo tocan: la plantilla trae uno, así que
+	// el mínimo 2 exige un commit propio aunque el alumno haya clonado la plantilla en vez
+	// de usar «Use this template».
 	commits(c) {
-		const r = spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: RAIZ, encoding: 'utf8' });
+		const ruta = c.archivo ? ['--', c.archivo] : [];
+		const r = spawnSync('git', ['rev-list', '--count', 'HEAD', ...ruta], { cwd: RAIZ, encoding: 'utf8' });
 		if (r.error || r.status !== 0) {
 			return { ok: false, detalle: 'Esta carpeta no está conectada a Git. Clona tu repositorio como dice la guía.' };
 		}
