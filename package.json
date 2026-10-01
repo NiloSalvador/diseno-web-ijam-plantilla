@@ -1,0 +1,22 @@
+{
+  "name": "sitio-web-ijam",
+  "type": "module",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "revisar": "node revisor/revisar.mjs"
+  },
+  "dependencies": {
+    "astro": "^7.3.5"
+  },
+  "allowScripts": {
+    "esbuild": true
+  }
+}

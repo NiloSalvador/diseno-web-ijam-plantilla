@@ -1,0 +1,59 @@
+{
+  "semana": 1,
+  "titulo": "Tu primer sitio con Astro",
+  "revisorMinimo": 1,
+  "criterios": [
+    {
+      "tipo": "compila",
+      "puntos": 20,
+      "nombre": "El sitio compila"
+    },
+    {
+      "tipo": "etiqueta-texto",
+      "puntos": 15,
+      "nombre": "El título de la pestaña lleva el nombre del negocio",
+      "archivo": "index.html",
+      "etiqueta": "title",
+      "distintoDe": ["Nombre de tu negocio", "Astro"]
+    },
+    {
+      "tipo": "etiqueta-texto",
+      "puntos": 15,
+      "nombre": "El encabezado principal lleva el nombre del negocio",
+      "archivo": "index.html",
+      "etiqueta": "h1",
+      "distintoDe": ["Nombre de tu negocio", "Astro"]
+    },
+    {
+      "tipo": "apartados-markdown",
+      "puntos": 30,
+      "nombre": "El brief tiene todos sus apartados escritos",
+      "archivo": "BRIEF.md",
+      "apartados": [
+        "El negocio",
+        "El permiso",
+        "Objetivo del sitio",
+        "Público",
+        "Páginas",
+        "Contenido que ya tienes",
+        "Estilo visual",
+        "Boceto"
+      ],
+      "minimoPalabras": 8,
+      "marcador": "Escribe aquí"
+    },
+    {
+      "tipo": "archivo-en-carpeta",
+      "puntos": 10,
+      "nombre": "El boceto está en la carpeta boceto",
+      "carpeta": "boceto",
+      "extensiones": [".jpg", ".jpeg", ".png", ".webp", ".svg", ".pdf"]
+    },
+    {
+      "tipo": "commits",
+      "puntos": 10,
+      "nombre": "Hay al menos un commit tuyo",
+      "minimo": 2
+    }
+  ]
+}
