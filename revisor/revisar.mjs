@@ -706,9 +706,11 @@ for (const { c, r } of resultados) {
 	}
 }
 
-const final = Math.round((puntaje / total) * 100);
+// Con algo que falta el puntaje no llega a 100: el redondeo de 99,8 mostraba «100 de 100» y «Todo cuadra» bajo un «Falta».
+const todoCuadra = resultados.every(({ r }) => r.ok);
+const final = todoCuadra ? 100 : Math.min(99, Math.round((puntaje / total) * 100));
 console.log(`\n${negrita(`Puntaje ${final} de 100`)}`);
-if (final === 100) {
+if (todoCuadra) {
 	console.log(verde('Todo cuadra. Si cambiaste algo después del último commit, haz otro y súbelo.'));
 } else {
 	console.log(`Corrige lo que falta y vuelve a escribir npm run revisar -- ${rubrica.semana}`);
