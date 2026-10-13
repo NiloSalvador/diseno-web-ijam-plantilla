@@ -14,7 +14,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = 2;
+const VERSION = 3;
 const CARPETA_REVISOR = path.dirname(fileURLToPath(import.meta.url));
 const RAIZ = path.resolve(CARPETA_REVISOR, '..');
 const URL_CURSO = 'https://raw.githubusercontent.com/NiloSalvador/diseno-web-ijam/main/revisor/';
@@ -227,6 +227,72 @@ function compilar() {
 		ok: false,
 		detalle: ['Astro no pudo generar el sitio. Estas son sus últimas líneas', ...lineas.slice(-12)].join('\n'),
 	};
+}
+
+// ---------- Ayudas del revisor 3 (semana 3 en adelante): CSS y Tailwind ----------
+
+// Los archivos de una carpeta del proyecto con esas extensiones, sin node_modules ni carpetas ocultas.
+function archivosDe(carpeta, extensiones) {
+	const hallados = [];
+	const recorrer = (dir) => {
+		for (const nombre of readdirSync(dir)) {
+			if (nombre === 'node_modules' || nombre.startsWith('.')) continue;
+			const ruta = path.join(dir, nombre);
+			if (statSync(ruta).isDirectory()) recorrer(ruta);
+			else if (extensiones.includes(path.extname(nombre).toLowerCase())) hallados.push(ruta);
+		}
+	};
+	const raiz = path.join(RAIZ, carpeta);
+	if (existsSync(raiz)) recorrer(raiz);
+	return hallados;
+}
+
+const rutaVisible = (ruta) => path.relative(RAIZ, ruta).split(path.sep).join('/');
+
+// El CSS que recibe una página: sus hojas enlazadas de dist/ y sus bloques <style>.
+function cssDePagina(p) {
+	const enlazado = etiquetasDe(p.html, 'link')
+		.filter((e) => /\bstylesheet\b/i.test(atributo(e, 'rel') ?? ''))
+		.map((e) => rutaInterna(atributo(e, 'href'), p.url))
+		.map((ruta) => (ruta ? archivoDelSitio(ruta) : null))
+		.filter(Boolean)
+		.map((archivo) => readFileSync(path.join(RAIZ, 'dist', archivo), 'utf8'));
+	return [...enlazado, ...contenidoDe(p.html, 'style')].join('\n');
+}
+
+let cacheCss = null;
+const cssDelSitio = () => (cacheCss ??= paginas().map(cssDePagina).join('\n'));
+
+// Los nombres de clase que tienen reglas en el CSS del sitio (.hover\:bg-selva da hover:bg-selva).
+let cacheClasesCss = null;
+const clasesDelCss = () =>
+	(cacheClasesCss ??= new Set([...cssDelSitio().matchAll(/\.((?:\\.|[\w-])+)/g)].map((m) => m[1].replace(/\\(.)/g, '$1'))));
+
+// Los colores y las fuentes que el alumno escribió en @theme, en cualquier .css de src/.
+let cacheTema = null;
+function temaDelProyecto() {
+	if (cacheTema) return cacheTema;
+	const tema = { hay: false, colores: [], fuentes: [] };
+	for (const archivo of archivosDe('src', ['.css'])) {
+		const css = readFileSync(archivo, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+		for (const m of css.matchAll(/@theme\b[^{;]*\{/g)) {
+			tema.hay = true;
+			const inicio = m.index + m[0].length;
+			let nivel = 1;
+			let i = inicio;
+			while (i < css.length && nivel > 0) {
+				if (css[i] === '{') nivel++;
+				else if (css[i] === '}') nivel--;
+				i++;
+			}
+			for (const d of css.slice(inicio, i).matchAll(/--(color|font)-([\w-]+)\s*:/g)) {
+				if (d[1] === 'font' && d[2].startsWith('weight')) continue;
+				const lista = d[1] === 'color' ? tema.colores : tema.fuentes;
+				if (!lista.includes(d[2])) lista.push(d[2]);
+			}
+		}
+	}
+	return (cacheTema = tema);
 }
 
 // ---------- Tipos de criterio ----------
@@ -470,9 +536,102 @@ const CRITERIOS = {
 		}
 		return resultado(Math.max(marcos.length, c.minimo), pendientes);
 	},
+
+	// Desde aquí, criterios del revisor 3 (semana 3 en adelante): Tailwind y la marca en @theme.
+
+	'tailwind-instalado'() {
+		let paquete = {};
+		try {
+			paquete = JSON.parse(readFileSync(path.join(RAIZ, 'package.json'), 'utf8'));
+		} catch {
+			// Sin package.json legible, cuenta como no instalado.
+		}
+		const dependencias = { ...paquete.dependencies, ...paquete.devDependencies };
+		if (!dependencias.tailwindcss || !dependencias['@tailwindcss/vite']) {
+			return { ok: false, detalle: 'Tailwind no está instalado. Escribe npx astro add tailwind en la terminal y acepta los cambios.' };
+		}
+		const config = ['astro.config.mjs', 'astro.config.js', 'astro.config.ts']
+			.map((n) => path.join(RAIZ, n))
+			.find((r) => existsSync(r));
+		if (!config || !/tailwindcss\s*\(/.test(readFileSync(config, 'utf8'))) {
+			return { ok: false, detalle: 'astro.config.mjs no carga Tailwind. Vuelve a escribir npx astro add tailwind y acepta los cambios.' };
+		}
+		const ps = paginas();
+		const pendientes = ps
+			.filter((p) => !/@layer\s+utilities\b/.test(cssDePagina(p)))
+			.map((p) => `${p.url} no recibe los estilos de Tailwind. Importa src/styles/global.css en el frontmatter de esa página.`);
+		return resultadoPorPagina(ps, pendientes);
+	},
+
+	'tema-tailwind'(c) {
+		const tema = temaDelProyecto();
+		if (!tema.hay) {
+			return { ok: false, detalle: 'No encontré @theme en los archivos .css de src. Escríbelo en src/styles/global.css con los colores y la fuente de tu marca.' };
+		}
+		const css = cssDelSitio();
+		const colores = tema.colores.filter((n) => css.includes(`var(--color-${n})`));
+		const fuentes = tema.fuentes.filter((n) => css.includes(`var(--font-${n})`));
+		const pendientes = [];
+		if (tema.colores.length < c.minimoColores) {
+			pendientes.push(`En @theme hay ${tema.colores.length} color(es) y la semana pide ${c.minimoColores}. Agrega los de tu marca con --color-nombre.`);
+		} else if (colores.length < c.minimoColores) {
+			const ejemplo = tema.colores.find((n) => !colores.includes(n));
+			pendientes.push(`Usas ${colores.length} de los colores de @theme y la semana pide ${c.minimoColores}. Ponlos en tus páginas con clases como bg-${ejemplo} o text-${ejemplo}.`);
+		}
+		if (!tema.fuentes.length) pendientes.push('En @theme falta la fuente de tu marca. Agrégala con --font-nombre.');
+		else if (!fuentes.length) pendientes.push(`Todavía no usas la fuente de @theme. Ponle la clase font-${tema.fuentes[0]} a tus títulos o al <body>.`);
+		return resultado(2, pendientes);
+	},
+
+	// Busca una expresión en los archivos de src/, línea por línea (style en línea, colores sueltos…).
+	'prohibido-en-src'(c) {
+		const regex = new RegExp(c.patron, `${(c.banderas ?? 'i').replace('g', '')}g`);
+		const pendientes = [];
+		for (const archivo of archivosDe('src', c.extensiones)) {
+			readFileSync(archivo, 'utf8')
+				.split(/\r?\n/)
+				.forEach((linea, i) => {
+					for (const m of linea.matchAll(regex)) {
+						pendientes.push(`En ${rutaVisible(archivo)}, línea ${i + 1}, ${c.mensaje.replace('{texto}', m[0].trim())}`);
+					}
+				});
+		}
+		if (!pendientes.length) return { ok: true };
+		const r = resultado(pendientes.length, pendientes);
+		return { ok: false, parcial: 0, detalle: [r.detalle, c.consejo].filter(Boolean).join('\n') };
+	},
+
+	// Una clase con un nombre de @theme que Tailwind no generó. Casi siempre es una clase armada
+	// pegando textos ("bg-" + color): Tailwind lee el código buscando clases completas y no la ve.
+	'clases-generadas'() {
+		const tema = temaDelProyecto();
+		const nombres = [...tema.colores, ...tema.fuentes];
+		if (!nombres.length) return { ok: false, detalle: 'Primero escribe los colores y la fuente de tu marca en @theme.' };
+		const delTema = new RegExp(`-(?:${nombres.join('|')})(?:/\\d{1,3})?$`);
+		const enCss = clasesDelCss();
+		const vistas = new Set();
+		const pendientes = [];
+		for (const p of paginas()) {
+			for (const m of p.html.matchAll(/\sclass\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+				for (const clase of (m[1] ?? m[2]).split(/\s+/).filter(Boolean)) {
+					const base = clase.split(':').pop().replace(/^!|!$/g, '').replace(/^-/, '');
+					if (!delTema.test(base) || vistas.has(clase)) continue;
+					vistas.add(clase);
+					if (!enCss.has(clase)) {
+						pendientes.push(`En ${p.url} la clase ${clase} no tiene estilos, porque Tailwind no la encontró escrita en tu código. Si la armaste pegando textos ("bg-" + color), escríbela completa.`);
+					}
+				}
+			}
+		}
+		if (!vistas.size) return { ok: false, detalle: 'Todavía no usas en tus páginas ninguna clase con los nombres de @theme.' };
+		return resultado(vistas.size, pendientes);
+	},
 };
 
 const NECESITAN_SITIO = new Set([
+	'tailwind-instalado',
+	'tema-tailwind',
+	'clases-generadas',
 	'etiqueta-texto',
 	'paginas',
 	'atributo-html',
