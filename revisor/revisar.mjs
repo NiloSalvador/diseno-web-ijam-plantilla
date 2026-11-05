@@ -14,7 +14,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = 6;
+const VERSION = 7;
 const CARPETA_REVISOR = path.dirname(fileURLToPath(import.meta.url));
 const RAIZ = path.resolve(CARPETA_REVISOR, '..');
 const URL_CURSO = 'https://raw.githubusercontent.com/NiloSalvador/diseno-web-ijam/main/revisor/';
@@ -1094,7 +1094,238 @@ const CRITERIOS = {
 		}
 		return { ok: false, parcial: 0, detalle };
 	},
+
+	// Desde aquí, criterios del revisor 7 (semana 7 en adelante): el formulario de WhatsApp, lo que
+	// leen los buscadores y las redes, y el informe de Lighthouse.
+
+	// Los campos de los <form> del sitio: cada uno con su <label>, con name, el type que le toca y
+	// al menos uno con required, para que el navegador no deje enviar el formulario incompleto.
+	formulario(c) {
+		const formularios = paginas().flatMap((p) => contenidoDe(p.html, 'form').map((f) => ({ pagina: p.url, f })));
+		if (!formularios.length) {
+			return { ok: false, detalle: 'El sitio no tiene ningún formulario. Arma el de la lección 7.1 en src/pages/contacto.astro, entre <form> y </form>.' };
+		}
+		const pendientes = [];
+		let campos = 0;
+		let obligatorios = 0;
+		for (const { pagina, f } of formularios) {
+			const conFor = new Set(etiquetasDe(f, 'label').map((e) => atributo(e, 'for')).filter(Boolean));
+			const envueltos = contenidoDe(f, 'label').join('\n');
+			for (const e of etiquetasDelHtml(f).filter((t) => /^<(?:input|select|textarea)\b/i.test(t))) {
+				const tipo = (atributo(e, 'type') ?? '').toLowerCase();
+				if (['hidden', 'submit', 'button', 'reset', 'image'].includes(tipo)) continue;
+				campos++;
+				if (/\srequired(?=[\s>=/])/i.test(e)) obligatorios++;
+				const id = atributo(e, 'id');
+				const nombre = atributo(e, 'name');
+				const cual = id ? `id="${id}"` : nombre ? `name="${nombre}"` : `<${/^<(\w+)/.exec(e)[1].toLowerCase()}>`;
+				if (!(id && conFor.has(id)) && !envueltos.includes(e) && !atributo(e, 'aria-label')) {
+					pendientes.push(id
+						? `En ${pagina} el campo ${cual} no tiene su etiqueta. Escribe encima <label for="${id}">…</label>, con el mismo texto que su id, y dentro lo que hay que llenar.`
+						: `En ${pagina} un campo ${cual} no tiene id ni etiqueta. Ponle un id, como id="nombre", y encima <label for="nombre">…</label>.`);
+				}
+				if (!nombre) pendientes.push(`En ${pagina} el campo ${cual} no tiene name. Ponle uno, como name="nombre", porque el script busca lo escrito por ese nombre.`);
+				const pista = normalizar(`${id ?? ''} ${nombre ?? ''}`);
+				if (/correo|email/.test(pista) && tipo !== 'email') pendientes.push(`En ${pagina} el campo ${cual} pide un correo. Ponle type="email", así el navegador revisa que tenga @ y el celular muestra el teclado del correo.`);
+				else if (/telefono|celular|\btel\b/.test(pista) && tipo !== 'tel') pendientes.push(`En ${pagina} el campo ${cual} pide un número. Ponle type="tel", así el celular muestra el teclado de números.`);
+			}
+		}
+		const minimo = c.minimo ?? 3;
+		if (campos < minimo) pendientes.push(`El formulario tiene ${campos} campo(s) y la semana pide ${minimo}, por ejemplo el nombre, qué necesita y el mensaje.`);
+		if (campos && !obligatorios) pendientes.push('Ningún campo tiene required. Agrégalo a los que no pueden quedar vacíos, así el navegador no deja enviar el formulario incompleto.');
+		return resultado(Math.max(campos, minimo) + 1, pendientes);
+	},
+
+	// El <script> que escucha el envío del formulario, evita que la página se recargue y abre
+	// WhatsApp con el texto pasado por encodeURIComponent.
+	'mensaje-whatsapp'() {
+		const scripts = scriptsDelProyecto();
+		const conEnvio = scripts.filter((s) => /addEventListener\(\s*['"`]submit['"`]/.test(s.codigo));
+		if (!conEnvio.length) {
+			return { ok: false, detalle: 'Ningún <script> escucha el envío del formulario. En src/pages/contacto.astro, debajo de </Layout>, escribe el <script> de la lección 7.1, con formulario.addEventListener(\'submit\', …).' };
+		}
+		const s = conEnvio.find((x) => /wa\.me\/|api\.whatsapp\.com/.test(x.codigo));
+		if (!s) {
+			return { ok: false, parcial: 1 / 4, detalle: `El script de ${rutaVisible(conEnvio[0].ruta)} escucha el envío, pero no arma el enlace de WhatsApp. Escribe https://wa.me/ con tu número y ?text= al final, como en la lección 7.1.` };
+		}
+		const archivo = rutaVisible(s.ruta);
+		const pendientes = [];
+		if (!/\.preventDefault\s*\(\s*\)/.test(s.codigo)) {
+			pendientes.push(`El script de ${archivo} no llama a evento.preventDefault(). Sin esa línea el navegador manda el formulario y recarga la página en vez de abrir WhatsApp.`);
+		}
+		if (!/encodeURIComponent\s*\(/.test(s.codigo)) {
+			pendientes.push(`El script de ${archivo} pone el texto en el enlace sin encodeURIComponent. Escribe ?text=\${encodeURIComponent(texto)}, porque sin él un &, un # o un salto de línea cortan el mensaje.`);
+		}
+		const numero = /wa\.me\/(\+?[\d\s-]+)/.exec(s.codigo)?.[1];
+		if (numero && !/^51\d{9}$/.test(numero.trim())) {
+			pendientes.push(`En ${archivo} el número de wa.me dice «${numero.trim()}». Escríbelo con el 51 del Perú delante de los 9 dígitos, sin +, espacios ni guiones, como wa.me/51987654321.`);
+		}
+		return resultado(4, pendientes);
+	},
+
+	// Cada página tiene su <meta name="description">, distinta de las demás y con un largo que el
+	// buscador muestra entero.
+	'descripciones-unicas'(c) {
+		const ps = paginas();
+		const minimo = c.minimo ?? 50;
+		const maximo = c.maximo ?? 160;
+		const pendientes = [];
+		const vistas = new Map();
+		for (const p of ps) {
+			const meta = etiquetasDe(p.html, 'meta').find((e) => (atributo(e, 'name') ?? '').toLowerCase() === 'description');
+			const texto = (meta ? atributo(meta, 'content') ?? '' : '').replace(/\s+/g, ' ').trim();
+			if (!texto) {
+				pendientes.push(`${p.url} no tiene descripción. En src/layouts/Layout.astro escribe <meta name="description" content={description} /> y en la página pásale al molde description="…" con lo que hay en ella.`);
+			} else if (texto.length < minimo) {
+				pendientes.push(`La descripción de ${p.url} tiene ${texto.length} caracteres. Escribe entre ${minimo} y ${maximo}, con lo que la persona encuentra en esa página.`);
+			} else if (texto.length > maximo) {
+				pendientes.push(`La descripción de ${p.url} tiene ${texto.length} caracteres y Google corta lo que pasa de ${maximo}. Acórtala en la página, en description="…".`);
+			} else if (vistas.has(normalizar(texto))) {
+				pendientes.push(`${vistas.get(normalizar(texto))} y ${p.url} tienen la misma descripción. Cada página necesita la suya, en description="…".`);
+			} else {
+				vistas.set(normalizar(texto), p.url);
+			}
+		}
+		return resultadoPorPagina(ps, pendientes);
+	},
+
+	// Open Graph en cada página: título, descripción, imagen, dirección y tipo, con la imagen y la
+	// dirección completas (https://…), la dirección distinta por página y la imagen dentro del sitio.
+	'open-graph'(c) {
+		const pide = c.propiedades ?? ['og:title', 'og:description', 'og:image', 'og:url', 'og:type'];
+		const site = siteDelSitio();
+		const ps = paginas();
+		const pendientes = [];
+		const direcciones = new Map();
+		for (const p of ps) {
+			const metas = etiquetasDe(p.html, 'meta');
+			const og = (propiedad) => {
+				const meta = metas.find((e) => (atributo(e, 'property') ?? '').toLowerCase() === propiedad);
+				return meta ? (atributo(meta, 'content') ?? '').trim() : '';
+			};
+			const faltan = pide.filter((propiedad) => !og(propiedad));
+			if (faltan.length) {
+				pendientes.push(`A ${p.url} le falta ${faltan.map((f) => `<meta property="${f}">`).join(', ')}. Escríbelas en el <head> de src/layouts/Layout.astro.`);
+				continue;
+			}
+			const incompletas = ['og:url', 'og:image'].filter((propiedad) => !/^https?:\/\/[^/]/i.test(og(propiedad)));
+			for (const propiedad of incompletas) {
+				pendientes.push(`En ${p.url} ${propiedad} dice «${og(propiedad)}» y WhatsApp necesita la dirección completa, con https://. Ármala con new URL(…, Astro.site) y pon site en astro.config.mjs.`);
+			}
+			if (incompletas.length) continue;
+			const direccion = og('og:url').replace(/\/+$/, '');
+			if (direcciones.has(direccion)) {
+				pendientes.push(`${direcciones.get(direccion)} y ${p.url} tienen la misma og:url. Ármala con Astro.url.pathname, así cada página dice la suya.`);
+			} else {
+				direcciones.set(direccion, p.url);
+			}
+			const imagen = new URL(og('og:image'));
+			if (site && imagen.host === site.host) {
+				const ruta = rutaInterna(imagen.pathname, p.url);
+				if (ruta && !archivoDelSitio(ruta)) {
+					pendientes.push(`La imagen de og:image de ${p.url}, ${imagen.pathname}, no está en el sitio. Pon la foto en la carpeta public con ese mismo nombre.`);
+				}
+			}
+		}
+		return resultadoPorPagina(ps, pendientes);
+	},
+
+	// site en astro.config y el mapa del sitio que @astrojs/sitemap genera al compilar, con todas las páginas.
+	sitemap() {
+		const pendientes = [];
+		const site = siteDelSitio();
+		if (site === null) {
+			pendientes.push('Falta site en astro.config.mjs. Dentro de defineConfig({ … }) escribe site: \'https://tu-usuario.github.io\', con tu usuario de GitHub.');
+		} else if (!site) {
+			pendientes.push('site en astro.config.mjs tiene que ser una dirección completa que empiece con https://, como https://tu-usuario.github.io.');
+		}
+		const indice = archivoDelSitio('/sitemap-index.xml');
+		if (!indice) {
+			pendientes.push(site
+				? 'La compilación no generó dist/sitemap-index.xml. Escribe npx astro add sitemap, responde que sí a todo y vuelve a revisar.'
+				: 'Sin site, Astro no genera el mapa del sitio. Pon site en astro.config.mjs y, si todavía no lo hiciste, escribe npx astro add sitemap.');
+			return resultado(3, [...pendientes, 'Faltan páginas en el mapa del sitio.']);
+		}
+		const leerXml = (ruta) => readFileSync(path.join(RAIZ, 'dist', ruta), 'utf8');
+		const locs = (xml) => [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => decodificar(m[1]));
+		const enElMapa = new Set();
+		const rutaDe = (loc) => {
+			try {
+				return rutaInterna(new URL(loc).pathname, '/');
+			} catch {
+				return null;
+			}
+		};
+		for (const parte of locs(leerXml(indice))) {
+			const ruta = rutaDe(parte);
+			const archivo = ruta && /\.xml$/i.test(ruta) ? archivoDelSitio(ruta) : null;
+			if (!archivo) continue;
+			for (const loc of locs(leerXml(archivo))) enElMapa.add((rutaDe(loc) ?? '').replace(/\/+$/, ''));
+		}
+		const fuera = paginas().filter((p) => !enElMapa.has(p.url.replace(/\/+$/, '')));
+		if (fuera.length) {
+			pendientes.push(`El mapa del sitio no tiene ${fuera.map((p) => p.url).join(', ')}. Vuelve a compilar con npm run build y revisa que esas páginas estén en src/pages.`);
+		}
+		return resultado(3, pendientes);
+	},
+
+	// Los informes de Lighthouse guardados como JSON en la carpeta lighthouse: las cuatro notas en 90
+	// o más, medidas sobre el sitio compilado (npm run preview) y no sobre npm run dev.
+	lighthouse(c) {
+		const carpeta = c.carpeta ?? 'lighthouse';
+		const minimo = c.minimo ?? 90;
+		const raiz = path.join(RAIZ, carpeta);
+		const archivos = existsSync(raiz) ? readdirSync(raiz).filter((n) => n.toLowerCase().endsWith('.json')) : [];
+		if (!archivos.length) {
+			return { ok: false, detalle: `No hay ningún informe de Lighthouse en la carpeta ${carpeta}. Mide tu sitio con npm run build y npm run preview, guarda el informe con «Guardar como JSON» y pon el archivo en esa carpeta, como en la lección 7.2.` };
+		}
+		const categorias = { performance: 'Rendimiento', accessibility: 'Accesibilidad', 'best-practices': 'Prácticas recomendadas', seo: 'SEO' };
+		const pendientes = [];
+		for (const nombre of archivos) {
+			const visible = `${carpeta}/${nombre}`;
+			let informe = null;
+			try {
+				informe = JSON.parse(readFileSync(path.join(raiz, nombre), 'utf8'));
+			} catch {
+				// Se avisa abajo, igual que un JSON que no es de Lighthouse.
+			}
+			if (!informe?.lighthouseVersion || !informe.categories) {
+				pendientes.push(`${visible} no es un informe de Lighthouse. En el informe abre el menú de los tres puntos, elige «Guardar como JSON» y pon ese archivo en ${carpeta}.`);
+				continue;
+			}
+			const pedidos = JSON.stringify(informe.audits?.['network-requests']?.details?.items ?? []);
+			if (/\/@vite\/client|\/@id\/|dev-toolbar/.test(pedidos)) {
+				pendientes.push(`${visible} se midió con npm run dev, que sirve el sitio sin optimizar. Detén npm run dev con Ctrl + C, escribe npm run build y luego npm run preview, y mide otra vez.`);
+				continue;
+			}
+			const bajas = Object.entries(categorias)
+				.map(([clave, titulo]) => [titulo, informe.categories[clave]?.score])
+				.filter(([, nota]) => typeof nota !== 'number' || Math.round(nota * 100) < minimo);
+			if (bajas.length) {
+				const pagina = informe.finalDisplayedUrl ?? informe.finalUrl ?? informe.requestedUrl ?? '';
+				const notas = bajas.map(([titulo, nota]) => (typeof nota === 'number' ? `${titulo} saca ${Math.round(nota * 100)}` : `no se midió ${titulo}`));
+				pendientes.push(`En ${visible} (${pagina}) ${notas.join(', ')}. La semana pide ${minimo} o más en las cuatro. Abre el informe, corrige lo que marca en rojo o naranja y mide otra vez.`);
+			}
+		}
+		return resultado(archivos.length, pendientes);
+	},
 };
+
+// La dirección de «site» en astro.config: un URL si empieza con http(s)://, '' si dice otra cosa
+// y null si no está.
+function siteDelSitio() {
+	const config = ['astro.config.mjs', 'astro.config.js', 'astro.config.ts']
+		.map((n) => path.join(RAIZ, n))
+		.find((r) => existsSync(r));
+	const m = config && /\bsite\s*:\s*['"`]([^'"`]*)['"`]/.exec(sinComentarios(readFileSync(config, 'utf8')));
+	if (!m) return null;
+	try {
+		const url = new URL(m[1].trim());
+		return /^https?:$/.test(url.protocol) && url.host ? url : '';
+	} catch {
+		return '';
+	}
+}
 
 const ESCALAS_DE_PANTALLA = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.625, 3, 3.5, 4];
 
@@ -1146,6 +1377,10 @@ const NECESITAN_SITIO = new Set([
 	'catalogo',
 	'menu-movil',
 	'interactivo',
+	'formulario',
+	'descripciones-unicas',
+	'open-graph',
+	'sitemap',
 ]);
 
 function commitsSinSubir() {
