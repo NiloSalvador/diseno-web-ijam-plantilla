@@ -10,11 +10,12 @@
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = 7;
+const VERSION = 8;
 const CARPETA_REVISOR = path.dirname(fileURLToPath(import.meta.url));
 const RAIZ = path.resolve(CARPETA_REVISOR, '..');
 const URL_CURSO = 'https://raw.githubusercontent.com/NiloSalvador/diseno-web-ijam/main/revisor/';
@@ -24,6 +25,7 @@ const pintar = (codigo) => (texto) => (conColor ? `\x1b[${codigo}m${texto}\x1b[0
 const verde = pintar(32);
 const rojo = pintar(31);
 const negrita = pintar(1);
+const amarillo = pintar(33);
 
 function terminar(mensaje) {
 	console.log(`\n${mensaje}\n`);
@@ -150,7 +152,7 @@ function baseDelSitio() {
 	const config = ['astro.config.mjs', 'astro.config.js', 'astro.config.ts']
 		.map((n) => path.join(RAIZ, n))
 		.find((r) => existsSync(r));
-	const m = config && /\bbase\s*:\s*['"`]([^'"`]*)['"`]/.exec(readFileSync(config, 'utf8'));
+	const m = config && /\bbase\s*:\s*['"`]([^'"`]*)['"`]/.exec(sinComentarios(readFileSync(config, 'utf8')));
 	const limpia = m ? m[1].replace(/^\/+|\/+$/g, '') : '';
 	return limpia ? `/${limpia}/` : '/';
 }
@@ -1309,6 +1311,176 @@ const CRITERIOS = {
 		}
 		return resultado(archivos.length, pendientes);
 	},
+
+	// ---------- Revisor 8 (semana 8): publicar en GitHub Pages ----------
+
+	// site y base de astro.config, de acuerdo con el repositorio de GitHub de origin.
+	'base-github-pages'() {
+		const site = siteDelSitio();
+		const base = baseDelSitio();
+		if (!site) {
+			return { ok: false, detalle: 'Falta site en astro.config.mjs con la dirección completa, como https://tu-usuario.github.io. Es el paso 7 de la semana 7.' };
+		}
+		const repo = repositorioDeGitHub();
+		if (!repo) {
+			if (base !== '/') return { ok: true };
+			return { ok: false, detalle: 'Falta base en astro.config.mjs. Debajo de site escribe base: \'/nombre-de-tu-repositorio\', una barra y el nombre de tu repositorio de GitHub.' };
+		}
+		const pendientes = [];
+		const host = `${repo.usuario.toLowerCase()}.github.io`;
+		if (site.host.toLowerCase() !== host) {
+			pendientes.push(`site en astro.config.mjs dice ${site.origin} y tu usuario de GitHub es ${repo.usuario}. Escribe site: 'https://${host}'.`);
+		}
+		if (repo.nombre.toLowerCase() === host) {
+			if (base !== '/') pendientes.push(`Tu repositorio se llama ${repo.nombre}, así que GitHub publica el sitio en https://${host}/, sin carpeta. Borra la línea base de astro.config.mjs.`);
+		} else if (base === '/') {
+			pendientes.push(`Falta base en astro.config.mjs. Debajo de site escribe base: '/${repo.nombre}', una barra y el nombre de tu repositorio.`);
+		} else if (base !== `/${repo.nombre}/`) {
+			pendientes.push(`base en astro.config.mjs dice '${base.slice(0, -1)}' y tu repositorio se llama ${repo.nombre}. Escribe base: '/${repo.nombre}', igual que en GitHub, con las mismas minúsculas y guiones.`);
+		}
+		return resultado(2, pendientes);
+	},
+
+	// El flujo .github/workflows/*.yml con la acción de Astro, la de GitHub Pages y sus permisos.
+	'flujo-github-pages'() {
+		const carpeta = path.join(RAIZ, '.github', 'workflows');
+		const nombres = existsSync(carpeta) ? readdirSync(carpeta).filter((n) => /\.ya?ml$/i.test(n)) : [];
+		if (!nombres.length) {
+			return { ok: false, detalle: 'Falta el flujo de publicación. En la raíz de tu proyecto crea la carpeta .github/workflows, dentro el archivo deploy.yml, y pega el flujo del paso 6 de la guía de la semana 8.' };
+		}
+		const sinComentariosYaml = (texto) => texto.split(/\r?\n/).map((l) => l.replace(/(^|\s)#.*$/, '')).join('\n');
+		const flujos = nombres.map((n) => {
+			const original = readFileSync(path.join(carpeta, n), 'utf8');
+			return { visible: `.github/workflows/${n}`, original, texto: sinComentariosYaml(original) };
+		});
+		const flujo = flujos.find((f) => /uses:\s*['"]?withastro\/action@/i.test(f.texto));
+		if (!flujo) {
+			return { ok: false, detalle: `${flujos.map((f) => f.visible).join(' y ')} no usa la acción de Astro. Pega en .github/workflows/deploy.yml el flujo completo del paso 6 de la guía, el que dice uses: withastro/action.` };
+		}
+		const pendientes = [];
+		const conTab = flujo.original.split(/\r?\n/).findIndex((l) => /^ *\t/.test(l));
+		if (conTab >= 0) {
+			pendientes.push(`En ${flujo.visible} la línea ${conTab + 1} empieza con una tabulación y YAML solo acepta espacios. Borra esa sangría y escríbela con espacios, como en la guía.`);
+		}
+		if (!/uses:\s*['"]?actions\/deploy-pages@/i.test(flujo.texto)) {
+			pendientes.push(`A ${flujo.visible} le falta el trabajo deploy, el que usa actions/deploy-pages. Copia el flujo completo del paso 6 de la guía.`);
+		}
+		for (const permiso of ['pages', 'id-token']) {
+			if (!new RegExp(`^\\s*${permiso}\\s*:\\s*write\\s*$`, 'm').test(flujo.texto)) {
+				pendientes.push(`En ${flujo.visible} falta el permiso «${permiso}: write» dentro de permissions. Sin él, GitHub no deja publicar.`);
+			}
+		}
+		const rama = (spawnSync('git', ['branch', '--show-current'], { cwd: RAIZ, encoding: 'utf8' }).stdout ?? '').trim();
+		if (!/^\s*push\s*:/m.test(flujo.texto)) {
+			pendientes.push(`${flujo.visible} no se ejecuta cuando subes cambios. Debajo de on escribe push con branches: [ main ], como en la guía.`);
+		} else if (rama && !new RegExp(`branches\\s*:[^\\n]*['"\\[\\s,]${escapar(rama)}['"\\]\\s,]|branches\\s*:\\s*\\n\\s*-\\s*['"]?${escapar(rama)}['"]?\\s*$`, 'm').test(flujo.texto)) {
+			pendientes.push(`Tu rama se llama ${rama} y ${flujo.visible} se ejecuta con otra. En branches escribe [ ${rama} ].`);
+		}
+		if (!existsSync(path.join(RAIZ, 'package-lock.json'))) {
+			pendientes.push('Falta package-lock.json en la raíz del proyecto. Escribe npm install, que lo crea, y haz commit de ese archivo.');
+		} else if (spawnSync('git', ['ls-files', '--error-unmatch', 'package-lock.json'], { cwd: RAIZ, encoding: 'utf8' }).status === 1) {
+			pendientes.push('package-lock.json no está en tu repositorio y la acción de Astro lo necesita para instalar lo mismo que en tu PC. Revisa que .gitignore no lo nombre y haz commit de ese archivo.');
+		}
+		return resultado(6, pendientes);
+	},
+
+	// Con base, cada enlace, imagen o archivo de public/ que empieza con / tiene que empezar con la base;
+	// si no, en GitHub Pages lleva fuera del sitio y da 404. Se revisa lo compilado y se dice en qué
+	// archivo de src está escrito.
+	'rutas-con-base'() {
+		const base = baseDelSitio();
+		if (base === '/') return { ok: true };
+		const site = siteDelSitio();
+		const conBase = (ruta) => ruta === base.slice(0, -1) || ruta.startsWith(base);
+		const fuentes = archivosDe('src', ['.astro', '.md', '.mdx', '.html', '.js', '.jsx', '.ts', '.tsx']).map((ruta) => ({ ruta, texto: readFileSync(ruta, 'utf8') }));
+		// Los archivos de src donde está escrita esa ruta y si va en un atributo, como href="/carta".
+		// Un atributo que no lleva a ninguna parte, como pagina="/carta", no cuenta.
+		const dondeEsta = (valor) => {
+			const archivos = [];
+			let enAtributo = false;
+			for (const { ruta, texto } of fuentes) {
+				const comoAtributo = new RegExp(`\\b(?:href|src|srcset|action|content)\\s*=\\s*["']${escapar(valor)}["']`).test(texto);
+				if (comoAtributo || new RegExp(`(?<!=\\s*)(['"\`])${escapar(valor)}\\1`).test(texto)) {
+					archivos.push(rutaVisible(ruta));
+					enAtributo ||= comoAtributo;
+				}
+			}
+			return archivos.length ? { archivo: archivos.join(' y '), enAtributo } : null;
+		};
+		const sinBase = new Map();
+		let revisadas = 0;
+		const anotar = (valor, pagina, que) => {
+			const ruta = valor.split(/[?#]/)[0];
+			if (!/^\/(?!\/)/.test(ruta)) return;
+			revisadas++;
+			if (!conBase(ruta) && !sinBase.has(ruta)) sinBase.set(ruta, { pagina, que });
+		};
+		const etiquetas = [['a', ['href']], ['link', ['href']], ['img', ['src', 'srcset']], ['source', ['srcset']], ['script', ['src']], ['iframe', ['src']], ['form', ['action']]];
+		for (const p of paginas()) {
+			for (const [nombre, atributos] of etiquetas) {
+				for (const etiqueta of etiquetasDe(p.html, nombre)) {
+					for (const a of atributos) {
+						const valor = atributo(etiqueta, a);
+						if (!valor) continue;
+						const partes = a === 'srcset' ? valor.split(',').map((s) => s.trim().split(/\s+/)[0]) : [valor.trim()];
+						for (const parte of partes) anotar(parte, p.url, nombre === 'a' ? 'el enlace' : nombre === 'img' || nombre === 'source' ? 'la imagen' : `el <${nombre}>`);
+					}
+				}
+			}
+			for (const etiqueta of etiquetasDe(p.html, 'meta')) {
+				const propiedad = (atributo(etiqueta, 'property') ?? '').toLowerCase();
+				if (!site || !['og:image', 'og:url'].includes(propiedad)) continue;
+				try {
+					const url = new URL(atributo(etiqueta, 'content') ?? '');
+					if (url.host === site.host) anotar(url.pathname, p.url, propiedad);
+				} catch {
+					// Una dirección incompleta la marca el criterio de Open Graph.
+				}
+			}
+		}
+		const pendientes = [...sinBase].map(([ruta, { pagina, que }]) => {
+			const donde = dondeEsta(ruta);
+			const arreglo = !donde
+				? `Búscalo en src y escríbelo como \`\${base}${ruta}\`.`
+				: donde.enAtributo
+					? `Abre ${donde.archivo} y cambia "${ruta}" por {\`\${base}${ruta}\`}, con la línea const base del paso 3 de la guía.`
+					: `Abre ${donde.archivo} y cambia '${ruta}' por \`\${base}${ruta}\`, con la línea const base del paso 3 de la guía.`;
+			return `En ${pagina} ${que} lleva a ${ruta}, sin la base ${base.slice(0, -1)}, y en GitHub Pages da 404. ${arreglo}`;
+		});
+		return resultado(Math.max(revisadas, 1), pendientes);
+	},
+
+	// La dirección del sitio publicado (site y base) escrita en el README.md del proyecto.
+	'enlace-publicado'() {
+		const direccion = direccionPublicada();
+		if (!direccion) return { ok: false, detalle: 'Primero pon site y base en astro.config.mjs, porque con ellos se arma la dirección de tu sitio publicado.' };
+		const ruta = path.join(RAIZ, 'README.md');
+		const texto = existsSync(ruta) ? readFileSync(ruta, 'utf8') : '';
+		const normal = (u) => u.replace(/^http:/i, 'https:').replace(/[.,;:]+$/, '').replace(/\/+$/, '').toLowerCase();
+		const enlaces = texto.match(/https?:\/\/[^\s)<>\]"'`]+/gi) ?? [];
+		if (enlaces.some((u) => normal(u) === normal(direccion))) return { ok: true };
+		const parecido = enlaces.find((u) => /\.github\.io/i.test(u));
+		return {
+			ok: false,
+			detalle: parecido
+				? `En README.md la dirección «${parecido}» no es la de tu sitio. Cámbiala por «${direccion}».`
+				: `Abre README.md y escribe en una línea la dirección de tu sitio publicado, «${direccion}».`,
+		};
+	},
+
+	// Pide la dirección publicada por internet. Va como aviso: sin internet dice que no se pudo
+	// comprobar, y justo después de subir cambios la Action todavía puede estar publicando.
+	async 'sitio-responde'() {
+		const direccion = direccionPublicada();
+		if (!direccion) return { ok: false, detalle: 'Sin site en astro.config.mjs no se sabe cuál es la dirección de tu sitio publicado.' };
+		const r = await pedirDireccion(direccion);
+		if (r.estado >= 200 && r.estado < 300) return { ok: true };
+		if (r.estado === 404) {
+			return { ok: false, detalle: `${direccion} responde 404, no hay sitio publicado ahí. En GitHub abre Settings, luego Pages, y en Source elige GitHub Actions. Después mira en la pestaña Actions que el flujo termine con el visto verde.` };
+		}
+		if (r.estado) return { ok: false, detalle: `${direccion} responde con el código ${r.estado}. Espera un minuto y vuelve a revisar.` };
+		return { ok: false, detalle: `No se pudo comprobar ${direccion} (${r.error}). Revisa tu conexión a internet y vuelve a revisar, o ábrela en el navegador.` };
+	},
 };
 
 // La dirección de «site» en astro.config: un URL si empieza con http(s)://, '' si dice otra cosa
@@ -1325,6 +1497,51 @@ function siteDelSitio() {
 	} catch {
 		return '';
 	}
+}
+
+
+// El usuario y el nombre del repositorio de GitHub, leídos de git remote (origin), o null.
+function repositorioDeGitHub() {
+	const r = spawnSync('git', ['remote', 'get-url', 'origin'], { cwd: RAIZ, encoding: 'utf8' });
+	const m = r.status === 0 && /github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?\s*$/i.exec(r.stdout.trim());
+	return m ? { usuario: m[1], nombre: m[2] } : null;
+}
+
+// La dirección donde queda publicado el sitio, o null sin site: site y base de astro.config. Sin base,
+// la carpeta sale del nombre del repositorio, salvo que se llame <usuario>.github.io.
+function direccionPublicada() {
+	const site = siteDelSitio();
+	if (!site) return null;
+	const repo = repositorioDeGitHub();
+	const sinCarpeta = baseDelSitio() !== '/' || !repo || repo.nombre.toLowerCase() === site.host.toLowerCase();
+	return `${site.origin}${sinCarpeta ? baseDelSitio() : `/${repo.nombre}/`}`;
+}
+
+// Pide una dirección y devuelve { estado } con el código HTTP o { error } si no hubo respuesta.
+// Sigue hasta 3 redirecciones y se rinde a los 8 segundos. Con node:https y sin conexión
+// persistente, por lo mismo que descargar().
+function pedirDireccion(direccion, saltos = 3) {
+	return new Promise((resolver) => {
+		let url;
+		try {
+			url = new URL(direccion);
+		} catch {
+			resolver({ error: 'la dirección no es válida' });
+			return;
+		}
+		const cliente = url.protocol === 'http:' ? http : https;
+		const pedido = cliente.get(url, { agent: false, timeout: 8000, headers: { 'User-Agent': 'revisor-diseno-web-ijam' } }, (respuesta) => {
+			respuesta.resume();
+			const destino = respuesta.headers.location;
+			if (respuesta.statusCode >= 300 && respuesta.statusCode < 400 && destino && saltos > 0) {
+				resolver(pedirDireccion(new URL(destino, url).href, saltos - 1));
+				return;
+			}
+			resolver({ estado: respuesta.statusCode });
+		});
+		pedido.on('timeout', () => pedido.destroy(new Error('tiempo agotado')));
+		pedido.on('error', (e) => resolver({ error: ['ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'ECONNREFUSED'].includes(e.code) ? 'sin conexión' : e.message }));
+	});
 }
 
 const ESCALAS_DE_PANTALLA = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.625, 3, 3.5, 4];
@@ -1381,6 +1598,7 @@ const NECESITAN_SITIO = new Set([
 	'descripciones-unicas',
 	'open-graph',
 	'sitemap',
+	'rutas-con-base',
 ]);
 
 function commitsSinSubir() {
@@ -1413,6 +1631,8 @@ console.log(`Semana ${rubrica.semana} — ${rubrica.titulo}\n`);
 console.log('Compilando el sitio, espera unos segundos…\n');
 
 const resultados = [];
+// Los criterios con «aviso» en la rúbrica se muestran pero no cuentan en el puntaje.
+const avisos = [];
 let sitio = null;
 for (const c of rubrica.criterios) {
 	let r;
@@ -1424,11 +1644,11 @@ for (const c of rubrica.criterios) {
 	} else if (NECESITAN_SITIO.has(c.tipo) && c.tipo !== 'etiqueta-texto' && !paginas().length) {
 		r = { ok: false, detalle: 'No se generó ninguna página. Revisa que src/pages tenga tus archivos .astro.' };
 	} else if (CRITERIOS[c.tipo]) {
-		r = CRITERIOS[c.tipo](c);
+		r = await CRITERIOS[c.tipo](c);
 	} else {
 		terminar('Esta rúbrica usa una comprobación que tu revisor no conoce. Escribe npm run revisar -- actualizar.');
 	}
-	resultados.push({ c, r });
+	(c.aviso ? avisos : resultados).push({ c, r });
 }
 
 let puntaje = 0;
@@ -1437,6 +1657,13 @@ for (const { c, r } of resultados) {
 	total += c.puntos;
 	puntaje += r.ok ? c.puntos : c.puntos * (r.parcial ?? 0);
 	console.log(`  ${r.ok ? verde('Cuadra') : rojo('Falta ')}   ${c.nombre}`);
+	if (!r.ok && r.detalle) {
+		for (const linea of r.detalle.split('\n')) console.log(`             ${linea}`);
+	}
+}
+
+for (const { c, r } of avisos) {
+	console.log(`  ${r.ok ? verde('Cuadra') : amarillo('Aviso ')}   ${c.nombre}`);
 	if (!r.ok && r.detalle) {
 		for (const linea of r.detalle.split('\n')) console.log(`             ${linea}`);
 	}
