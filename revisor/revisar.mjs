@@ -14,7 +14,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = 5;
+const VERSION = 6;
 const CARPETA_REVISOR = path.dirname(fileURLToPath(import.meta.url));
 const RAIZ = path.resolve(CARPETA_REVISOR, '..');
 const URL_CURSO = 'https://raw.githubusercontent.com/NiloSalvador/diseno-web-ijam/main/revisor/';
@@ -388,6 +388,38 @@ function arreglosDeObjetos(archivo) {
 		}
 	}
 	return hallados;
+}
+
+// ---------- Ayudas del revisor 6 (semana 6 en adelante): JavaScript en la página ----------
+
+// El JavaScript del proyecto, sin comentarios: el de cada <script> de los .astro de src/ y el de
+// los .js y .ts de src/, menos los de src/data, que son datos. [{ ruta, codigo }]
+function scriptsDelProyecto() {
+	const hallados = [];
+	for (const ruta of archivosDe('src', ['.astro'])) {
+		const plantilla = plantillaDe(sinComentarios(readFileSync(ruta, 'utf8')));
+		for (const m of plantilla.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+			if (!/\stype\s*=\s*["']?application\//i.test(m[1])) hallados.push({ ruta, codigo: m[2] });
+		}
+	}
+	for (const ruta of archivosDe('src', ['.js', '.mjs', '.ts'])) {
+		if (!rutaVisible(ruta).startsWith('src/data/')) hallados.push({ ruta, codigo: sinComentarios(readFileSync(ruta, 'utf8')) });
+	}
+	return hallados;
+}
+
+// Todas las etiquetas de apertura de un HTML.
+const etiquetasDelHtml = (html) => html.match(/<[a-z][\w-]*\b[^>]*>/gi) ?? [];
+
+// Los id que existen en alguna página del sitio compilado.
+const idsDelSitio = () => new Set(paginas().flatMap((p) => etiquetasDelHtml(p.html).map((e) => atributo(e, 'id')).filter(Boolean)));
+
+// Los id que busca un código con getElementById('x') o querySelector('#x').
+function idsBuscados(codigo) {
+	const ids = [];
+	for (const m of codigo.matchAll(/getElementById\(\s*(['"`])([^'"`]+)\1\s*\)/g)) ids.push(m[2]);
+	for (const m of codigo.matchAll(/querySelector(?:All)?\(\s*(['"`])#([^'"`\s.[:>,]+)\1\s*\)/g)) ids.push(m[2]);
+	return [...new Set(ids)].filter((id) => !id.includes('${'));
 }
 
 // ---------- Tipos de criterio ----------
@@ -950,6 +982,118 @@ const CRITERIOS = {
 		}
 		return resultado(3, pendientes);
 	},
+
+	// Desde aquí, criterios del revisor 6 (semana 6 en adelante): JavaScript en la página.
+
+	// El menú del celular. En cada página, un <button> con texto, aria-expanded="false", md:hidden y
+	// aria-controls con el id de la lista del menú, que lleva hidden y se ve desde md:. Además, un
+	// <script> que escucha el clic, cambia aria-expanded y cierra con Escape, y ningún script busca
+	// un id que no existe (el error típico, getElementById da null y nada funciona).
+	'menu-movil'() {
+		const ps = paginas();
+		const scripts = scriptsDelProyecto();
+		const fallas = new Map();
+		const anotar = (mensaje, url) => fallas.set(mensaje, [...(fallas.get(mensaje) ?? []), url]);
+		let conBoton = 0;
+		for (const p of ps) {
+			const boton = etiquetasDe(p.html, 'button').find((b) => atributo(b, 'aria-expanded') !== null);
+			if (!boton) {
+				anotar('No hay un <button> con aria-expanded. Escríbelo en tu cabecera (src/components/Header.astro), con el texto Menú, aria-expanded="false" y aria-controls con el id de la lista del menú.', p.url);
+				continue;
+			}
+			conBoton++;
+			const expandido = atributo(boton, 'aria-expanded');
+			if (expandido !== 'false') {
+				anotar(`El botón del menú empieza con aria-expanded="${expandido}". Escribe aria-expanded="false", porque al abrir la página el menú está cerrado.`, p.url);
+			}
+			const inicio = p.html.indexOf(boton);
+			const texto = sinEtiquetas(p.html.slice(inicio + boton.length, p.html.indexOf('</button>', inicio)));
+			if (!texto && !atributo(boton, 'aria-label')) {
+				anotar('El botón del menú no tiene texto. Escribe Menú entre <button> y </button>, así se sabe para qué sirve.', p.url);
+			}
+			if (!(atributo(boton, 'class') ?? '').split(/\s+/).some((k) => /^(?:sm|md|lg):hidden$/.test(k))) {
+				anotar('El botón del menú se ve también en la computadora. Agrégale la clase md:hidden en src/components/Header.astro.', p.url);
+			}
+			const controla = atributo(boton, 'aria-controls');
+			const panel = controla && etiquetasDelHtml(p.html).find((e) => atributo(e, 'id') === controla);
+			if (!controla) {
+				anotar('El botón del menú no tiene aria-controls. Escribe aria-controls="menu-principal" en el botón y id="menu-principal" en la lista del menú.', p.url);
+			} else if (!panel) {
+				anotar(`El botón dice aria-controls="${controla}" y ningún elemento tiene id="${controla}". Escribe ese mismo id en la lista del menú, <ul id="${controla}">.`, p.url);
+			} else {
+				const clases = (atributo(panel, 'class') ?? '').split(/\s+/);
+				if (!clases.includes('hidden') || !clases.some((k) => /^(?:sm|md|lg):(?:flex|block|grid|inline-flex)$/.test(k))) {
+					anotar(`La lista del menú (id="${controla}") tiene que llevar la clase hidden, para esconderse en el celular, y md:flex, para verse siempre en la computadora.`, p.url);
+				}
+			}
+			if (!/<script\b/i.test(p.html)) {
+				anotar('La página no carga ningún <script>. Escribe el <script> del menú al final de src/components/Header.astro.', p.url);
+			}
+		}
+		const pendientes = [...fallas].map(([mensaje, urls]) =>
+			urls.length === ps.length ? mensaje : `En ${urls.join(', ')} ${mensaje[0].toLowerCase()}${mensaje.slice(1)}`,
+		);
+		const delMenu = scripts.filter((s) => /addEventListener\s*\(/.test(s.codigo) && /aria-expanded/.test(s.codigo));
+		if (!delMenu.length) {
+			pendientes.push('Ningún <script> cambia aria-expanded al pulsar el botón. En el <script> de src/components/Header.astro escucha el clic con addEventListener y cambia aria-expanded con setAttribute.');
+		} else if (!delMenu.some((s) => /['"`]Escape['"`]/.test(s.codigo))) {
+			pendientes.push('El menú no se cierra con la tecla Escape. En el <script> del menú escucha "keydown" y, si la tecla es "Escape", cierra el menú y devuelve el foco al botón con focus().');
+		}
+		// El error típico de la semana: el script busca un id escrito distinto que en el HTML.
+		const ids = idsDelSitio();
+		let buscados = 0;
+		for (const s of scripts) {
+			for (const id of idsBuscados(s.codigo)) {
+				buscados++;
+				if (!ids.has(id)) {
+					pendientes.push(`El script de ${rutaVisible(s.ruta)} busca el id «${id}» y ninguna página tiene un elemento con id="${id}". Escribe el id igual en el HTML y en el script, porque si no, getElementById da null y nada funciona.`);
+				}
+			}
+		}
+		if (!conBoton || !delMenu.length) return { ok: false, parcial: 0, detalle: resultado(1, pendientes).detalle };
+		return resultado(8 + buscados, pendientes);
+	},
+
+	// Un componente interactivo a elección (lección 6.2). Vale cualquiera de estos cuatro
+	// - preguntas frecuentes con «minimo» <details> o más, cada uno con su <summary> y su respuesta;
+	// - una galería con un <dialog> que un script abre con showModal();
+	// - un testimonio al azar, un script que elige con Math.random() y lo escribe en la página;
+	// - el modo oscuro, un script que pone o quita la clase dark, clases dark: en las páginas y
+	//   @custom-variant dark en el CSS, para que Tailwind siga la clase y no el ajuste del equipo.
+	interactivo(c) {
+		const html = paginas().map((p) => p.html).join('\n');
+		const js = scriptsDelProyecto().map((s) => s.codigo).join('\n');
+		const css = archivosDe('src', ['.css']).map((r) => readFileSync(r, 'utf8')).join('\n');
+		const minimo = c.minimo ?? 3;
+		const preguntas = contenidoDe(html, 'details').filter((d) => {
+			const m = /<summary\b[^>]*>([\s\S]*?)<\/summary>([\s\S]*)/i.exec(d);
+			return m && sinEtiquetas(m[1]) && sinEtiquetas(m[2]);
+		}).length;
+		const hayDialog = /<dialog\b/i.test(html);
+		const alAzar = /Math\.random\s*\(/.test(js);
+		const ponDark = /classList\.(?:toggle|add|remove)\(\s*['"`]dark['"`]/.test(js);
+		const claseDark = /\sclass\s*=\s*["'][^"']*\bdark:/i.test(html);
+		const opciones = [
+			preguntas >= minimo,
+			hayDialog && /\.showModal\s*\(/.test(js),
+			alAzar && /\.(?:textContent|innerText|innerHTML)\s*=/.test(js),
+			ponDark && claseDark && /@custom-variant\s+dark\b/.test(css),
+		];
+		if (opciones.some(Boolean)) return { ok: true };
+		let detalle = 'Todavía no hay un componente interactivo. Elige uno de la lección 6.2, preguntas frecuentes con <details> y <summary>, una galería con <dialog>, un testimonio al azar o el modo oscuro.';
+		if (preguntas) {
+			detalle = `Tienes ${preguntas} pregunta(s) con <details> y la semana pide ${minimo}. Escribe las que faltan, cada una con su <summary> y su respuesta.`;
+		} else if (hayDialog) {
+			detalle = 'Hay un <dialog>, pero ningún script lo abre. En su <script>, al pulsar la foto, llama a showModal() del <dialog>.';
+		} else if (alAzar) {
+			detalle = 'Tu script elige al azar con Math.random(), pero no escribe nada en la página. Pon el testimonio elegido en un elemento con textContent.';
+		} else if (ponDark && !claseDark) {
+			detalle = 'Tu script pone la clase dark, pero ninguna etiqueta tiene clases dark:. Agrega, por ejemplo, dark:bg-cafe-oscuro y dark:text-crema donde cambia el color.';
+		} else if (ponDark) {
+			detalle = 'Tu script pone la clase dark, pero Tailwind todavía sigue el ajuste del equipo. Escribe @custom-variant dark (&:where(.dark, .dark *)); en src/styles/global.css, debajo de @import "tailwindcss".';
+		}
+		return { ok: false, parcial: 0, detalle };
+	},
 };
 
 const ESCALAS_DE_PANTALLA = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.625, 3, 3.5, 4];
@@ -1000,6 +1144,8 @@ const NECESITAN_SITIO = new Set([
 	'tabla-con-th',
 	'iframe-con-title',
 	'catalogo',
+	'menu-movil',
+	'interactivo',
 ]);
 
 function commitsSinSubir() {
