@@ -14,7 +14,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = 4;
+const VERSION = 5;
 const CARPETA_REVISOR = path.dirname(fileURLToPath(import.meta.url));
 const RAIZ = path.resolve(CARPETA_REVISOR, '..');
 const URL_CURSO = 'https://raw.githubusercontent.com/NiloSalvador/diseno-web-ijam/main/revisor/';
@@ -295,6 +295,101 @@ function temaDelProyecto() {
 	return (cacheTema = tema);
 }
 
+// ---------- Ayudas del revisor 5 (semana 5 en adelante): molde, componentes y datos ----------
+
+// El código sin comentarios, para que un <slot /> o un import comentado no cuente.
+const sinComentarios = (codigo) =>
+	codigo
+		.replace(/<!--[\s\S]*?-->/g, '')
+		.replace(/\/\*[\s\S]*?\*\//g, '')
+		.replace(/^\s*\/\/.*$/gm, '');
+
+// La parte de un .astro que se vuelve HTML, sin el frontmatter de entre los ---.
+const plantillaDe = (codigo) => codigo.replace(/^\s*---[\s\S]*?\n---/, '');
+
+const escapar = (texto) => texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// La ruta para importar «destino» desde «archivo», como ../layouts/Layout.astro.
+function rutaParaImportar(archivo, destino) {
+	const relativa = path.relative(path.dirname(archivo), destino).split(path.sep).join('/');
+	return relativa.startsWith('.') ? relativa : `./${relativa}`;
+}
+
+const nombreDeComponente = (etiqueta) => etiqueta[0].toUpperCase() + etiqueta.slice(1);
+
+// Los arreglos de un archivo de datos (.js, .ts o .json) con los textos de cada objeto que
+// tienen: [{ nombre: 'productos', elementos: [['Café pasado', 'Café de altura…'], …] }].
+// Lee el código sin ejecutarlo, porque un archivo de datos de Astro puede importar fotos y Node
+// solo no sabe importar un .jpg.
+function arreglosDeObjetos(archivo) {
+	const codigo = readFileSync(archivo, 'utf8');
+	const hallados = [];
+	if (path.extname(archivo).toLowerCase() === '.json') {
+		let datos;
+		try {
+			datos = JSON.parse(codigo);
+		} catch {
+			return hallados;
+		}
+		const textosDe = (v) => (typeof v === 'string' ? [v] : v && typeof v === 'object' ? Object.values(v).flatMap(textosDe) : []);
+		const recorrer = (v) => {
+			if (Array.isArray(v)) {
+				const objetos = v.filter((e) => e && typeof e === 'object' && !Array.isArray(e));
+				hallados.push({ nombre: null, elementos: objetos.map(textosDe) });
+				v.forEach(recorrer);
+			} else if (v && typeof v === 'object') {
+				Object.values(v).forEach(recorrer);
+			}
+		};
+		recorrer(datos);
+		return hallados;
+	}
+	const pila = [];
+	const empezarElemento = (esObjeto) => {
+		const nivel = pila.at(-1);
+		if (nivel?.tipo === '[' && !nivel.actual) nivel.actual = { esObjeto, textos: [] };
+	};
+	const cerrarElemento = (nivel) => {
+		if (nivel.actual?.esObjeto) nivel.elementos.push(nivel.actual.textos);
+		nivel.actual = null;
+	};
+	for (let i = 0; i < codigo.length; i++) {
+		const ch = codigo[i];
+		if (ch === '/' && codigo[i + 1] === '/') {
+			const fin = codigo.indexOf('\n', i);
+			i = fin < 0 ? codigo.length : fin;
+		} else if (ch === '/' && codigo[i + 1] === '*') {
+			const fin = codigo.indexOf('*/', i + 2);
+			i = fin < 0 ? codigo.length : fin + 1;
+		} else if (ch === '"' || ch === "'" || ch === '`') {
+			empezarElemento(false);
+			let texto = '';
+			let j = i + 1;
+			for (; j < codigo.length && codigo[j] !== ch; j++) {
+				if (codigo[j] === '\\') j++;
+				texto += codigo[j] ?? '';
+			}
+			for (const nivel of pila) nivel.actual?.textos.push(texto);
+			i = j;
+		} else if (ch === '[' || ch === '{' || ch === '(') {
+			empezarElemento(ch === '{');
+			const antes = /(\w+)\s*(?::[^=;]*)?=\s*$/.exec(codigo.slice(Math.max(0, i - 200), i));
+			pila.push({ tipo: ch, nombre: antes?.[1] ?? null, elementos: [], actual: null });
+		} else if (ch === ']' || ch === '}' || ch === ')') {
+			const nivel = pila.pop();
+			if (nivel?.tipo === '[') {
+				cerrarElemento(nivel);
+				hallados.push({ nombre: nivel.nombre, elementos: nivel.elementos });
+			}
+		} else if (ch === ',') {
+			if (pila.at(-1)?.tipo === '[') cerrarElemento(pila.at(-1));
+		} else if (!/\s/.test(ch)) {
+			empezarElemento(false);
+		}
+	}
+	return hallados;
+}
+
 // ---------- Tipos de criterio ----------
 // Cada uno devuelve { ok, parcial (0 a 1, opcional), detalle (qué falta, opcional) }.
 
@@ -440,7 +535,7 @@ const CRITERIOS = {
 			} else if ((c.distintoDe ?? []).some((t) => normalizar(t) === normalizar(titulo))) {
 				pendientes.push(`El título de ${p.url} todavía dice «${titulo}».`);
 			} else if (vistos.has(normalizar(titulo))) {
-				pendientes.push(`${vistos.get(normalizar(titulo))} y ${p.url} tienen el mismo título «${titulo}». Cada página necesita el suyo.`);
+				pendientes.push(`${vistos.get(normalizar(titulo))} y ${p.url} tienen el mismo título «${titulo}». Cada página necesita el suyo. Si el título está en el molde de página, que cada página le pase el suyo con title="…".`);
 			} else {
 				vistos.set(normalizar(titulo), p.url);
 			}
@@ -559,7 +654,7 @@ const CRITERIOS = {
 		const ps = paginas();
 		const pendientes = ps
 			.filter((p) => !/@layer\s+utilities\b/.test(cssDePagina(p)))
-			.map((p) => `${p.url} no recibe los estilos de Tailwind. Importa src/styles/global.css en el frontmatter de esa página.`);
+			.map((p) => `${p.url} no recibe los estilos de Tailwind. Importa src/styles/global.css en el frontmatter de esa página, o en el de tu molde de página (src/layouts/Layout.astro) si ya lo tienes.`);
 		return resultadoPorPagina(ps, pendientes);
 	},
 
@@ -704,6 +799,157 @@ const CRITERIOS = {
 		}
 		return resultado(pedidas * c.anchos.length, pendientes);
 	},
+
+	// Desde aquí, criterios del revisor 5 (semana 5 en adelante). Miran el código de src/ y, el
+	// catálogo, también el sitio compilado.
+
+	// El molde de página: un .astro de src/layouts con el <head> y un <slot />, y cada página de
+	// src/pages lo importa y envuelve su contenido en él, sin escribir otra vez su propio <head>.
+	molde(c) {
+		const carpeta = c.carpeta ?? 'src/layouts';
+		const moldes = archivosDe(carpeta, ['.astro']);
+		if (!moldes.length) {
+			return {
+				ok: false,
+				detalle: `No hay ningún molde de página en ${carpeta}. Crea ${carpeta}/Layout.astro con el <html>, el <head> y un <slot /> donde va el contenido de cada página.`,
+			};
+		}
+		const pendientes = [];
+		for (const molde of moldes) {
+			const codigo = sinComentarios(readFileSync(molde, 'utf8'));
+			if (!/<slot\b/i.test(codigo)) {
+				pendientes.push(`${rutaVisible(molde)} no tiene <slot />. Sin él, el contenido de las páginas no aparece. Escribe <slot /> entre la cabecera y el pie.`);
+			}
+			if (!/<head\b/i.test(codigo)) {
+				pendientes.push(`${rutaVisible(molde)} no tiene el <head>. Muévelo ahí desde tus páginas, con el <title> que llega por props.`);
+			}
+		}
+		const nombres = moldes.map((m) => path.basename(m));
+		const paginasSrc = archivosDe('src/pages', ['.astro', '.md', '.mdx']).filter((r) => !path.basename(r).startsWith('_'));
+		for (const p of paginasSrc) {
+			const codigo = sinComentarios(readFileSync(p, 'utf8'));
+			const ruta = rutaParaImportar(p, moldes[0]);
+			if (path.extname(p).toLowerCase() !== '.astro') {
+				const encabezado = /^\s*---([\s\S]*?)\n---/.exec(codigo)?.[1] ?? '';
+				const layout = /^\s*layout\s*:\s*['"]?([^'"\n]+)/m.exec(encabezado)?.[1].trim();
+				if (!layout || !nombres.includes(path.posix.basename(layout))) {
+					pendientes.push(`${rutaVisible(p)} no usa el molde. En su encabezado, entre los ---, escribe layout: ${ruta}`);
+				}
+				continue;
+			}
+			const importados = [...codigo.matchAll(/import\s+(\w+)\s+from\s*['"]([^'"]+)['"]/g)]
+				.filter((m) => nombres.includes(path.posix.basename(m[2])))
+				.map((m) => m[1]);
+			const plantilla = plantillaDe(codigo);
+			if (!importados.some((n) => new RegExp(`<${n}[\\s>/]`).test(plantilla))) {
+				pendientes.push(`${rutaVisible(p)} no usa el molde. Entre los --- escribe import Layout from '${ruta}'; y envuelve todo el contenido en <Layout title="…"> y </Layout>.`);
+			} else if (/<(?:html|head)\b/i.test(plantilla)) {
+				pendientes.push(`${rutaVisible(p)} todavía escribe su propio <html> o <head>. Bórralos, porque ahora los pone el molde.`);
+			}
+		}
+		return resultado(moldes.length * 2 + paginasSrc.length, pendientes);
+	},
+
+	// Etiquetas que viven en un componente (la cabecera y el pie): cada una está en un .astro de
+	// src/components, ese componente se importa en el molde o en las páginas y ninguna página
+	// vuelve a escribir la etiqueta por su cuenta.
+	componentes(c) {
+		const carpeta = c.carpeta ?? 'src/components';
+		const leer = (r) => ({ ruta: r, codigo: sinComentarios(readFileSync(r, 'utf8')) });
+		const componentes = archivosDe(carpeta, ['.astro']).map(leer);
+		const usuarios = archivosDe('src', ['.astro', '.md', '.mdx']).map(leer);
+		const paginasSrc = archivosDe('src/pages', ['.astro']).filter((r) => !path.basename(r).startsWith('_')).map(leer);
+		const pendientes = [];
+		for (const etiqueta of c.etiquetas) {
+			const tiene = (a) => new RegExp(`<${etiqueta}\\b`, 'i').test(plantillaDe(a.codigo));
+			const con = componentes.filter(tiene);
+			const sugerido = nombreDeComponente(etiqueta);
+			if (!con.length) {
+				pendientes.push(`Ningún componente de ${carpeta} tiene el <${etiqueta}>. Crea ${carpeta}/${sugerido}.astro y pasa ahí el <${etiqueta}> de tus páginas.`);
+				continue;
+			}
+			const usado = con.some((comp) => {
+				const importa = new RegExp(`from\\s*['"][^'"]*/${escapar(path.basename(comp.ruta))}['"]`);
+				return usuarios.some((u) => u.ruta !== comp.ruta && importa.test(u.codigo));
+			});
+			const nombre = path.basename(con[0].ruta, '.astro');
+			if (!usado) {
+				pendientes.push(`${rutaVisible(con[0].ruta)} no se usa en ninguna parte. Impórtalo en tu molde (src/layouts/Layout.astro) y escribe <${nombre} /> donde va el <${etiqueta}>.`);
+			}
+			for (const p of paginasSrc.filter(tiene)) {
+				pendientes.push(`${rutaVisible(p.ruta)} todavía escribe su propio <${etiqueta}>. Bórralo, porque ahora lo pone el componente ${nombre}.`);
+			}
+		}
+		return resultado(c.etiquetas.length * (1 + paginasSrc.length), pendientes);
+	},
+
+	// Un catálogo que sale de un archivo de datos: en src/data hay un arreglo con «minimo» objetos o
+	// más, un archivo de src/ lo importa y lo recorre con .map() (con «componente», pintando un
+	// componente de src/components por cada objeto) y el sitio compilado muestra esos elementos.
+	catalogo(c) {
+		const carpeta = c.carpeta ?? 'src/data';
+		const minimo = c.minimo ?? 4;
+		const archivos = archivosDe(carpeta, ['.js', '.mjs', '.ts', '.json']);
+		if (!archivos.length) {
+			return {
+				ok: false,
+				detalle: `No hay ningún archivo de datos en ${carpeta}. Crea ${carpeta}/productos.js con un arreglo de tus productos o servicios, un objeto { } por cada uno.`,
+			};
+		}
+		let mejor = { archivo: null, nombre: null, elementos: [] };
+		for (const archivo of archivos) {
+			for (const a of arreglosDeObjetos(archivo)) {
+				if (a.elementos.length > mejor.elementos.length) mejor = { archivo, ...a };
+			}
+		}
+		if (mejor.elementos.length < minimo) {
+			return {
+				ok: false,
+				detalle: mejor.archivo
+					? `El arreglo más largo de ${rutaVisible(mejor.archivo)} tiene ${mejor.elementos.length} objeto(s) y la semana pide ${minimo}. Agrega un objeto { } por cada producto o servicio que falte.`
+					: `Los archivos de ${carpeta} no tienen un arreglo de objetos. Escribe uno como export const productos = [{ nombre: '…' }, { nombre: '…' }];`,
+			};
+		}
+		const datos = rutaVisible(mejor.archivo);
+		const lista = mejor.nombre ?? 'productos';
+		const base = path.basename(mejor.archivo).replace(/\.[^.]+$/, '');
+		const importa = new RegExp(`from\\s*['"][^'"]*/${escapar(base)}(?:\\.(?:[cm]?[jt]s|json))?['"]`);
+		const usuarios = archivosDe('src', ['.astro', '.jsx', '.tsx', '.mdx'])
+			.map((r) => ({ ruta: r, codigo: sinComentarios(readFileSync(r, 'utf8')) }))
+			.filter((u) => importa.test(u.codigo));
+		const conMap = usuarios.filter((u) => /\.map\s*\(/.test(u.codigo));
+		const pendientes = [];
+		if (!usuarios.length) {
+			pendientes.push(`Ninguna página usa ${datos}. En la página del catálogo, entre los ---, escribe import { ${lista} } from '…/data/${path.basename(mejor.archivo)}'; con la ruta hasta tu archivo.`);
+		} else if (!conMap.length) {
+			pendientes.push(`${rutaVisible(usuarios[0].ruta)} importa los datos pero no los recorre. Escribe {${lista}.map((item) => ( … ))} donde van las tarjetas.`);
+		}
+		if (c.componente && conMap.length) {
+			const pintaComponente = conMap.some((u) =>
+				[...u.codigo.matchAll(/\.map\s*\(/g)].some((m) => {
+					const etiqueta = /<([A-Z]\w*)/.exec(u.codigo.slice(m.index, m.index + 600))?.[1];
+					return etiqueta && new RegExp(`import\\s+${etiqueta}\\s+from\\s*['"][^'"]*components/`).test(u.codigo);
+				}),
+			);
+			if (!pintaComponente) {
+				pendientes.push(`El .map() de ${rutaVisible(conMap[0].ruta)} no pinta un componente. Pasa la tarjeta a src/components/Tarjeta.astro y en el .map() escribe <Tarjeta … /> con los datos de cada objeto como props.`);
+			}
+		}
+		const textoDelSitio = normalizar(
+			paginas()
+				.map((p) => [sinEtiquetas(p.html), ...etiquetasDe(p.html, 'img').map((e) => atributo(e, 'alt') ?? '')].join(' '))
+				.join(' '),
+		);
+		const visibles = mejor.elementos.filter((textos) =>
+			textos
+				.map(normalizar)
+				.some((t) => t.length >= 4 && !/^(?:[./#]|https?:|mailto:|tel:)/.test(t) && textoDelSitio.includes(t)),
+		).length;
+		if (visibles < minimo) {
+			pendientes.push(`En el sitio se ven ${visibles} de los ${mejor.elementos.length} objetos de ${datos} y la semana pide ${minimo}. Revisa que el .map() devuelva una tarjeta por cada objeto.`);
+		}
+		return resultado(3, pendientes);
+	},
 };
 
 const ESCALAS_DE_PANTALLA = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.625, 3, 3.5, 4];
@@ -753,6 +999,7 @@ const NECESITAN_SITIO = new Set([
 	'enlaces-con',
 	'tabla-con-th',
 	'iframe-con-title',
+	'catalogo',
 ]);
 
 function commitsSinSubir() {
