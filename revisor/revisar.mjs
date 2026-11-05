@@ -14,7 +14,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = 3;
+const VERSION = 4;
 const CARPETA_REVISOR = path.dirname(fileURLToPath(import.meta.url));
 const RAIZ = path.resolve(CARPETA_REVISOR, '..');
 const URL_CURSO = 'https://raw.githubusercontent.com/NiloSalvador/diseno-web-ijam/main/revisor/';
@@ -626,9 +626,117 @@ const CRITERIOS = {
 		if (!vistas.size) return { ok: false, detalle: 'Todavía no usas en tus páginas ninguna clase con los nombres de @theme.' };
 		return resultado(vistas.size, pendientes);
 	},
+
+	// Desde aquí, criterios del revisor 4 (semana 4 en adelante): maquetación para celular y computadora.
+
+	// Cada página lleva <meta name="viewport"> con width=device-width e initial-scale=1, sin impedir el zoom.
+	'meta-viewport'() {
+		const ps = paginas();
+		const pendientes = [];
+		for (const p of ps) {
+			const meta = etiquetasDe(p.html, 'meta').find((e) => (atributo(e, 'name') ?? '').toLowerCase() === 'viewport');
+			if (!meta) {
+				pendientes.push(`${p.url} no tiene la etiqueta <meta name="viewport"> dentro de su <head>.`);
+				continue;
+			}
+			const contenido = (atributo(meta, 'content') ?? '').toLowerCase().replace(/\s+/g, '');
+			const faltan = [
+				contenido.split(',').includes('width=device-width') ? null : 'width=device-width',
+				/(?:^|,)initial-scale=1(?:\.0*)?(?:,|$)/.test(contenido) ? null : 'initial-scale=1',
+			].filter(Boolean);
+			if (faltan.length) {
+				pendientes.push(`En ${p.url} el viewport dice «${atributo(meta, 'content')}» y le falta ${faltan.join(' y ')}.`);
+			} else if (/user-scalable=(?:no|0)/.test(contenido) || /maximum-scale=1(?:\.0*)?(?:,|$)/.test(contenido)) {
+				pendientes.push(`En ${p.url} el viewport impide ampliar la página con los dedos. Quita user-scalable y maximum-scale.`);
+			}
+		}
+		return resultadoPorPagina(ps, pendientes);
+	},
+
+	// Elementos cuyo class tiene a la vez las clases que pide «todas» (expresiones que se prueban
+	// contra cada clase con su prefijo, como md:grid-cols-2). Con «porPagina» se exige en cada
+	// página y con «dentro» solo se mira dentro de esa etiqueta, por ejemplo main.
+	clases(c) {
+		const patrones = c.todas.map((p) => new RegExp(p));
+		const cuenta = (html) => {
+			let n = 0;
+			for (const m of html.matchAll(/\sclass\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+				const lista = (m[1] ?? m[2]).split(/\s+/).filter(Boolean);
+				if (patrones.every((re) => lista.some((clase) => re.test(clase)))) n++;
+			}
+			return n;
+		};
+		const zona = (p) => (c.dentro ? contenidoDe(p.html, c.dentro).join('\n') : p.html);
+		const minimo = c.minimo ?? 1;
+		const ps = paginas();
+		if (!c.porPagina) {
+			return ps.reduce((n, p) => n + cuenta(zona(p)), 0) >= minimo ? { ok: true } : { ok: false, detalle: c.falta };
+		}
+		const pendientes = ps.filter((p) => cuenta(zona(p)) < minimo).map((p) => c.falta.replace('{pagina}', p.url));
+		return resultadoPorPagina(ps, pendientes);
+	},
+
+	// Capturas de pantalla en una carpeta del proyecto, una por página y por ancho. El ancho sale
+	// del nombre (inicio-375.png) y se comprueba con la medida real de la imagen, que viene
+	// multiplicada por la escala de la pantalla (1, 1,25, 1,5, 2…). Si la página se sale a lo
+	// ancho, la captura de página completa sale más ancha y tampoco cuadra.
+	capturas(c) {
+		const carpeta = path.join(RAIZ, c.carpeta);
+		const archivos = existsSync(carpeta) ? readdirSync(carpeta).filter((n) => /\.(?:png|jpe?g)$/i.test(n)) : [];
+		const pedidas = c.minimoPorAncho ?? paginasMinimas;
+		const pendientes = [];
+		for (const ancho of c.anchos) {
+			const delAncho = archivos.filter((n) => new RegExp(`(?:^|\\D)${ancho}(?:\\D|$)`).test(n));
+			for (const nombre of delAncho) {
+				const medida = medidaDeImagen(path.join(carpeta, nombre));
+				if (!medida) {
+					pendientes.push(`No pude leer la imagen ${c.carpeta}/${nombre}. Vuelve a guardarla como PNG.`);
+					continue;
+				}
+				const escala = medida.ancho / ancho;
+				if (!ESCALAS_DE_PANTALLA.some((e) => Math.abs(escala - e) / e <= 0.03)) {
+					pendientes.push(`La captura ${c.carpeta}/${nombre} mide ${medida.ancho} px de ancho y no corresponde a una pantalla de ${ancho} px. Tómala con el ancho en ${ancho}; si el ancho estaba bien, algo de esa página se sale a lo ancho.`);
+				}
+			}
+			if (delAncho.length < pedidas) {
+				pendientes.push(`En la carpeta ${c.carpeta} hay ${delAncho.length} captura(s) a ${ancho} px y la semana pide ${pedidas}, una por página. El nombre de cada una lleva el ancho, por ejemplo inicio-${ancho}.png.`);
+			}
+		}
+		return resultado(pedidas * c.anchos.length, pendientes);
+	},
 };
 
+const ESCALAS_DE_PANTALLA = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.625, 3, 3.5, 4];
+
+// El ancho y el alto de una imagen PNG o JPG, leídos de su cabecera, o null si no se entiende.
+function medidaDeImagen(ruta) {
+	const b = readFileSync(ruta);
+	if (b.length > 24 && b.readUInt32BE(0) === 0x89504e47) return { ancho: b.readUInt32BE(16), alto: b.readUInt32BE(20) };
+	if (b.length > 4 && b[0] === 0xff && b[1] === 0xd8) {
+		let i = 2;
+		while (i + 9 < b.length) {
+			if (b[i] !== 0xff) return null;
+			const marca = b[i + 1];
+			if (marca === 0xff) {
+				i++;
+				continue;
+			}
+			if (marca === 0x01 || (marca >= 0xd0 && marca <= 0xd8)) {
+				i += 2;
+				continue;
+			}
+			if (marca >= 0xc0 && marca <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marca)) {
+				return { alto: b.readUInt16BE(i + 5), ancho: b.readUInt16BE(i + 7) };
+			}
+			i += 2 + b.readUInt16BE(i + 2);
+		}
+	}
+	return null;
+}
+
 const NECESITAN_SITIO = new Set([
+	'meta-viewport',
+	'clases',
 	'tailwind-instalado',
 	'tema-tailwind',
 	'clases-generadas',
